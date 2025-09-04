@@ -1,3 +1,6 @@
+import 'package:demo1/utils/config.dart';
+import 'package:demo1/utils/evntbus.dart';
+import 'package:demo1/utils/toast.dart';
 import 'package:demo1/utils/token.dart';
 import 'package:dio/dio.dart';
 
@@ -8,7 +11,7 @@ class NetworkService {
   // 构造函数：初始化配置
   NetworkService() {
     // 基础配置
-    _dio.options.baseUrl = 'http://192.168.1.117:12111/api/v1/';
+    _dio.options.baseUrl = ApiConfig.baseUrl;
     _dio.options.connectTimeout = const Duration(seconds: 20);
     _dio.options.receiveTimeout = const Duration(seconds: 20);
     _dio.options.headers = {'Content-Type': 'application/json'};
@@ -30,8 +33,7 @@ class NetworkService {
           // 获取本地Token并添加到请求头
           final token = TokenManager().getToken() ?? '';
           if (token.isNotEmpty) {
-            options.headers['Authorization'] =
-                'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJVaWQiOiI3NDgwNDZlOS1kYmRmLTRjZjItODZkNi1iY2VjZWYzNGEzMGMiLCJVc2VySWQiOiIxMDAwMDAwMDAxMCJ9.EIsfbb6cwE2JHu2maTqc-ojm06qBURJfkFtkEIB37_o';
+            options.headers['Authorization'] = 'Bearer $token';
           }
           return handler.next(options);
         },
@@ -109,6 +111,7 @@ class NetworkService {
         if (responseData['code'] == 200) {
           return responseData; // 返回完整数据（含data、msg等）
         } else {
+          ToastUtil.showError(responseData['msg']);
           throw Exception('业务错误：${responseData['msg'] ?? '未知错误'}');
         }
       }
@@ -140,7 +143,8 @@ class NetworkService {
         // 401：Token失效（跳转登录页）
         if (statusCode == 401) {
           await TokenManager().removeToken(); // 清除本地Token
-          // eventBus.fire(LogoutEvent()); // 触发登录页跳转（需根据你的事件总线实现）
+          eventBus.fire(LogoutEvent()); // 触发登录页跳转
+
           throw Exception('登录已过期，请重新登录');
         }
 

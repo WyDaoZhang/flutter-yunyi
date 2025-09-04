@@ -40,6 +40,22 @@ class _LoginPageState extends State<LoginPage> {
   bool _agreedToTerms = false; // 协议勾选状态
   final TextEditingController _usernameController = TextEditingController();
   final TextEditingController _passwordController = TextEditingController();
+  //登入状态提示
+  bool _isLoading = false;
+
+  @override
+  void initState() {
+    super.initState();
+    tokenur();
+  }
+
+  tokenur() async {
+    await TokenManager().init();
+    final token = TokenManager().getToken();
+    if (token != null) {
+      return Navigator.pushNamed(context, '/details');
+    }
+  }
 
   @override
   void dispose() {
@@ -53,41 +69,48 @@ class _LoginPageState extends State<LoginPage> {
   //   'ws://192.168.1.117/chat/api_server/api/ws',
   // );
 
-  String age =
-      'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJVaWQiOiJlZDhmMDk2Yi1lODRmLTRkYmEtYjE0Yy03ODEwNzgzNTg5YjciLCJVc2VySWQiOiIxMDAwMDAwMDAwMCJ9.iOgSY0EcHpcvLFMRqONP_3TXeeLb2aqy81bKMgMHQCI';
   // 登录按钮点击事件
   void _handleLogin() async {
-    if (!_agreedToTerms) {
-      ToastUtil.showError('请勾选协议');
-      return; // 未勾选协议时直接返回，不继续执行后续逻辑
+    setState(() {
+      _isLoading = true;
+    });
+
+    try {
+      if (!_agreedToTerms) {
+        ToastUtil.showError('请勾选协议');
+        return; // 未勾选协议时直接返回，不继续执行后续逻辑
+      }
+      // 协议已勾选，继续验证手机号
+      String mobile = _usernameController.text;
+      if (mobile.isEmpty) {
+        ToastUtil.showError('请输入用户名密码');
+        return;
+      }
+      final resa = await http.post(
+        '/auth/loginKey',
+        data: {
+          'ak': _usernameController.text,
+          'pk': _passwordController.text,
+          'lt': '1',
+        },
+      );
+      debugPrint('登录结果: ' + resa['data'].toString());
+      if (resa['code'] == 200) {
+        TokenManager().saveToken(resa['data']['token']);
+        ToastUtil.showInfo('登录成功');
+        Navigator.pushAndRemoveUntil(
+          context,
+          MaterialPageRoute(builder: (context) => ChatPage()),
+          (route) => false,
+        );
+      }
+    } catch (e) {
+      // ToastUtil.showInfo('登录失败');
+    } finally {
+      setState(() {
+        _isLoading = false;
+      });
     }
-
-    // 协议已勾选，继续验证手机号
-    String mobile = _usernameController.text;
-    if (mobile.isEmpty) {
-      ToastUtil.showError('请输入用户名密码');
-      return;
-    }
-    // final resa = await http.post(
-    //   '/auth/loginKey',
-    //   data: {
-    //     'ak': _usernameController.text,
-    //     'pk': _passwordController.text,
-    //     'lt': '1',
-    //   },
-    // );
-    // debugPrint('登录结果: ' + resa['data'].toString());
-
-    // var res = await http.get('/getUserInfo');
-    // debugPrint('获取用户信息: $res');
-    // TokenManager tokenManager = TokenManager();
-    // //存储token
-    // await tokenManager.saveToken(age);
-
-    Navigator.push(
-      context,
-      MaterialPageRoute(builder: (context) => ChatPage()),
-    );
   }
 
   // 注册按钮点击事件
@@ -179,7 +202,7 @@ class _LoginPageState extends State<LoginPage> {
                 const SizedBox(height: 50),
                 // 登录按钮
                 ElevatedButton(
-                  onPressed: _handleLogin,
+                  onPressed: _isLoading ? null : _handleLogin, // 加载中禁用按钮
                   style: ElevatedButton.styleFrom(
                     minimumSize: const Size(double.infinity, 50),
                     backgroundColor: Colors.blue,
@@ -187,65 +210,76 @@ class _LoginPageState extends State<LoginPage> {
                       borderRadius: BorderRadius.circular(50),
                     ),
                   ),
-                  child: const Text(
-                    '登录',
-                    style: TextStyle(fontSize: 16, color: Colors.white),
-                  ),
+                  child: _isLoading
+                      ? // 加载状态显示圆形进度指示器
+                        const SizedBox(
+                          width: 20,
+                          height: 20,
+                          // backgroundColor: Colors.transparent,
+                          child: CircularProgressIndicator(
+                            color: Colors.blue,
+                            strokeWidth: 2,
+                          ),
+                        )
+                      : // 正常状态显示登录文本
+                        const Text(
+                          '登录',
+                          style: TextStyle(fontSize: 16, color: Colors.white),
+                        ),
                 ),
                 const SizedBox(height: 16),
-                // 注册按钮
                 Opacity(
                   opacity: 0.5,
                   child: ElevatedButton(
-                    onPressed: _handleRegister,
+                    onPressed: _handleSmsLogin,
                     style: ElevatedButton.styleFrom(
                       minimumSize: const Size(double.infinity, 50),
-                      backgroundColor: Colors.grey[200],
+                      backgroundColor: const Color.fromARGB(255, 188, 186, 186),
                       shape: RoundedRectangleBorder(
                         borderRadius: BorderRadius.circular(50),
                       ),
                     ),
                     child: const Text(
-                      '注册',
+                      '手机号登录',
                       style: TextStyle(fontSize: 16, color: Colors.white),
                     ),
                   ),
                 ),
                 const SizedBox(height: 16),
                 // 验证码登录
-                Align(
-                  alignment: Alignment.center,
-                  child: TextButton(
-                    style: TextButton.styleFrom(
-                      padding: EdgeInsets.zero,
-                      minimumSize: Size.zero,
-                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                    ),
-                    onPressed: _handleSmsLogin,
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      crossAxisAlignment: CrossAxisAlignment.center,
-                      children: [
-                        const Text('验证码登录', style: TextStyle(fontSize: 14)),
-                        const SizedBox(width: 4),
-                        // 优化箭头图标位置
-                        Transform.translate(
-                          offset: Offset(0, 1.1),
-                          child: Image.asset(
-                            'assets/login/5.png',
-                            width: 15,
-                            height: 15,
-                            fit: BoxFit.contain,
-                            alignment: Alignment.center,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
+                // Align(
+                //   alignment: Alignment.center,
+                //   child: TextButton(
+                //     style: TextButton.styleFrom(
+                //       padding: EdgeInsets.zero,
+                //       minimumSize: Size.zero,
+                //       tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                //     ),
+                //     onPressed: _handleSmsLogin,
+                //     child: Row(
+                //       mainAxisSize: MainAxisSize.min,
+                //       crossAxisAlignment: CrossAxisAlignment.center,
+                //       children: [
+                //         const Text('验证码登录', style: TextStyle(fontSize: 14)),
+                //         const SizedBox(width: 4),
+                //         // 优化箭头图标位置
+                //         Transform.translate(
+                //           offset: Offset(0, 1.1),
+                //           child: Image.asset(
+                //             'assets/login/5.png',
+                //             width: 15,
+                //             height: 15,
+                //             fit: BoxFit.contain,
+                //             alignment: Alignment.center,
+                //           ),
+                //         ),
+                //       ],
+                //     ),
+                //   ),
+                // ),
                 const SizedBox(height: 70),
                 Text(
-                  '第三方登录',
+                  '',
                   style: TextStyle(
                     fontSize: 12,
                     color: Colors.grey,
@@ -254,59 +288,59 @@ class _LoginPageState extends State<LoginPage> {
                 ),
                 const SizedBox(height: 8),
                 // 第三方登录图标按钮
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    IconButton(
-                      onPressed: () {},
-                      icon: const Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Image(
-                            image: AssetImage('./assets/login/2.png'),
-                            width: 42,
-                          ),
-                        ],
-                      ),
-                    ),
-                    IconButton(
-                      onPressed: () {},
-                      icon: const Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Image(
-                            image: AssetImage('./assets/login/8.png'),
-                            width: 42,
-                          ),
-                        ],
-                      ),
-                    ),
-                    IconButton(
-                      onPressed: () {},
-                      icon: const Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Image(
-                            image: AssetImage('./assets/login/7.png'),
-                            width: 42,
-                          ),
-                        ],
-                      ),
-                    ),
-                    IconButton(
-                      onPressed: () {},
-                      icon: const Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Image(
-                            image: AssetImage('./assets/login/6.png'),
-                            width: 42,
-                          ),
-                        ],
-                      ),
-                    ),
-                  ],
-                ),
+                // Row(
+                //   mainAxisAlignment: MainAxisAlignment.center,
+                //   children: [
+                //     IconButton(
+                //       onPressed: () {},
+                //       icon: const Column(
+                //         mainAxisSize: MainAxisSize.min,
+                //         children: [
+                //           Image(
+                //             image: AssetImage('./assets/login/2.png'),
+                //             width: 42,
+                //           ),
+                //         ],
+                //       ),
+                //     ),
+                //     IconButton(
+                //       onPressed: () {},
+                //       icon: const Column(
+                //         mainAxisSize: MainAxisSize.min,
+                //         children: [
+                //           Image(
+                //             image: AssetImage('./assets/login/8.png'),
+                //             width: 42,
+                //           ),
+                //         ],
+                //       ),
+                //     ),
+                //     IconButton(
+                //       onPressed: () {},
+                //       icon: const Column(
+                //         mainAxisSize: MainAxisSize.min,
+                //         children: [
+                //           Image(
+                //             image: AssetImage('./assets/login/7.png'),
+                //             width: 42,
+                //           ),
+                //         ],
+                //       ),
+                //     ),
+                //     IconButton(
+                //       onPressed: () {},
+                //       icon: const Column(
+                //         mainAxisSize: MainAxisSize.min,
+                //         children: [
+                //           Image(
+                //             image: AssetImage('./assets/login/6.png'),
+                //             width: 42,
+                //           ),
+                //         ],
+                //       ),
+                //     ),
+                //   ],
+                // ),
                 const SizedBox(height: 16),
                 // 协议勾选及文本
                 Row(

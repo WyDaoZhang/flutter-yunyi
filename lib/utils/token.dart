@@ -22,6 +22,7 @@ class TokenManager {
 
   // 5. 提供saveToken方法用于存储token
   Future<void> saveToken(String token) async {
+    _token = token;
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_key, token);
     _token = token;

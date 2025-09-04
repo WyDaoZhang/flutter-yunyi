@@ -1,10 +1,19 @@
+import 'dart:convert';
 import 'dart:io';
 
+import 'package:demo1/pages/home/index.dart';
 import 'package:demo1/pages/login/login.dart';
 import 'package:demo1/pages/setting/email.dart';
 import 'package:demo1/pages/setting/password.dart';
+import 'package:demo1/utils/evntbus.dart';
+import 'package:demo1/utils/http.dart';
+import 'package:demo1/utils/storage.dart';
+import 'package:demo1/utils/toast.dart';
+import 'package:demo1/utils/token.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
+// import 'package:image_picker_web/image_picker_web.dart'; // 如需专门适配Web可添加此依赖
 
 // 用户个人资料页
 class ProfilePageCustom extends StatefulWidget {
@@ -16,34 +25,103 @@ class ProfilePageCustom extends StatefulWidget {
 
 class _ProfilePageCustomState extends State<ProfilePageCustom> {
   // 头像图片路径，默认本地图片
-  String avatarPath = 'assets/login/6.png';
+  String avatarPath = 'assets/chat/tx.png';
+  // 头像的base64编码
+  String? avatarBase64;
+  bool _isUploading = false;
 
   // 跳转到设置密码页面
   void _goToSetPassword() {
     Navigator.push(
       context,
-      MaterialPageRoute(builder: (context) => const PasswordSettingPage()),
+      MaterialPageRoute(builder: (context) => const PasswordResetPage()),
     );
   }
 
-  // 跳转到PC端登录码页面（暂未实现）
-  void _goToPcCode() {
-    // Navigator.push(
-    //   context,
-    //   MaterialPageRoute(builder: (context) => const PcCodePage()),
-    // );
+  @override
+  void initState() {
+    super.initState();
+    _getuserinfo();
   }
 
-  // 跳转到邮箱认证页面
-  void _goToEmailVerify() {
-    // Navigator.push(
-    //   context,
-    //   MaterialPageRoute(builder: (context) => const EmailVerifyPage()),
-    // );
+  // 用户信息
+  void _getuserinfo() async {
+    final info = await http.get('/getUserInfo');
+    setState(() {
+      avatarPath = info['data']['user']['avatar'];
+    });
+  }
+
+  // 将图片转换为base64编码（跨平台兼容版本）
+  Future<String?> _imageToBase64(XFile imageFile) async {
+    try {
+      // 直接通过XFile读取字节，避免使用File类
+      List<int> imageBytes = await imageFile.readAsBytes();
+
+      // 转换为base64
+      String base64String = base64Encode(imageBytes);
+
+      // 获取图片格式
+      String mimeType = imageFile.mimeType ?? 'image/jpeg';
+
+      // 返回完整的data URI格式
+      return 'data:$mimeType;base64,$base64String';
+    } catch (e) {
+      print('图片转换base64失败: $e');
+      ToastUtil.showInfo('图片处理失败: ${e.toString()}');
+      return null;
+    }
+  }
+
+  // 修改方法
+  void _updateUserInfo() async {
+    if (avatarBase64 == null) {
+      ToastUtil.showInfo('请选择图片');
+      return;
+    }
+
+    setState(() {
+      _isUploading = true;
+    });
+
+    try {
+      final editemy = await http.put(
+        '/editMyInfo',
+        data: {'avatar': avatarBase64},
+      );
+
+      if (editemy['code'] == 200) {
+        ToastUtil.showInfo('保存成功');
+        // 发送头像更新事件
+        eventBus.fire(AvatarUpdatedEvent(avatarBase64!));
+      } else {
+        ToastUtil.showInfo('保存失败: ${editemy['message'] ?? '未知错误'}');
+      }
+    } catch (e) {
+      print('更新用户信息失败: $e');
+      ToastUtil.showInfo('更新失败，请重试');
+    } finally {
+      setState(() {
+        _isUploading = false;
+      });
+    }
+  }
+
+  void _goToPcCode() {
     Navigator.push(
       context,
-      MaterialPageRoute(builder: (context) => const EmailConfigPage()),
+      MaterialPageRoute(builder: (context) => const PasswordSettingPages()),
     );
+  }
+
+  void _goToPcCodes() async {
+    await TokenManager().removeToken();
+
+    // 显示提示信息
+    ToastUtil.showInfo('Token已过期，请重新登录');
+
+    // 触发登出事件，这会让应用跳转到登录页面
+    eventBus.fire(LogoutEvent());
   }
 
   // 退出登录
@@ -59,11 +137,15 @@ class _ProfilePageCustomState extends State<ProfilePageCustom> {
             child: const Text('取消'),
           ),
           TextButton(
-            onPressed: () {
+            onPressed: () async {
+              TokenManager().removeToken();
+              WebSocketManager().disconnect();
+              await StorageUtil.clearHistoryMessages();
               Navigator.pop(context); // 关闭对话框
-              // 执行退出逻辑，比如清除token等
-              Navigator.of(context).pushReplacement(
+              Navigator.pushAndRemoveUntil(
+                context,
                 MaterialPageRoute(builder: (context) => const MyApp()),
+                (route) => false,
               );
             },
             child: const Text('确定'),
@@ -73,15 +155,62 @@ class _ProfilePageCustomState extends State<ProfilePageCustom> {
     );
   }
 
-  // 选择头像图片（从相册）
+  // ... existing code ...
+  // 获取头像图片提供者
+  ImageProvider _getAvatarImageProvider(String path) {
+    try {
+      if (path.isEmpty) {
+        return AssetImage('assets/chat/tx.png');
+      } else if (path.startsWith('assets/')) {
+        return AssetImage(path);
+      } else if (path.startsWith('data:image')) {
+        // 处理base64格式的头像
+        final base64Data = path.split(',')[1];
+        return MemoryImage(base64Decode(base64Data));
+      } else if (path.startsWith('http://') || path.startsWith('https://')) {
+        // 网络图片
+        return NetworkImage(path);
+      } else if (kIsWeb) {
+        return NetworkImage(path);
+      } else {
+        // 本地文件
+        final file = File(path);
+        if (file.existsSync()) {
+          return FileImage(file);
+        } else {
+          return AssetImage('assets/chat/tx.png');
+        }
+      }
+    } catch (e) {
+      print('头像处理异常: $e');
+      return AssetImage('assets/chat/tx.png');
+    }
+  }
+
+  // ... existing code ...
+  // 选择头像图片（跨平台兼容版本）
   Future<void> _pickAvatar() async {
     final picker = ImagePicker();
     final picked = await picker.pickImage(source: ImageSource.gallery);
+
     if (picked != null) {
       setState(() {
         avatarPath = picked.path;
+        _isUploading = true;
       });
-      // 这里可以上传头像到服务器
+
+      // 直接使用XFile进行转换，不依赖File
+      String? base64Data = await _imageToBase64(picked);
+
+      setState(() {
+        avatarBase64 = base64Data;
+        _isUploading = false;
+      });
+
+      // 如果转换成功则上传
+      if (base64Data != null) {
+        _updateUserInfo();
+      }
     }
   }
 
@@ -122,27 +251,36 @@ class _ProfilePageCustomState extends State<ProfilePageCustom> {
                       // 用户头像
                       CircleAvatar(
                         radius: 60,
-                        backgroundImage: avatarPath.startsWith('assets/')
-                            ? AssetImage(avatarPath)
-                            : FileImage(
-                                    // ignore: prefer_const_constructors
-                                    File(avatarPath),
-                                  )
-                                  as ImageProvider,
-                        backgroundColor: Colors.white,
+                        backgroundImage: _getAvatarImageProvider(avatarPath),
+                        backgroundColor: Colors.grey[200],
+                        onBackgroundImageError: (exception, stackTrace) {
+                          print('头像加载错误: $exception');
+                          setState(() {
+                            avatarPath = 'assets/chat/tx.png'; // 加载失败时使用默认头像
+                          });
+                        },
                       ),
                       // 相机按钮（点击可更换头像）
                       Positioned(
                         bottom: 6,
                         right: 0,
                         child: InkWell(
-                          onTap: _pickAvatar,
+                          onTap: _isUploading ? null : _pickAvatar,
                           child: Image(
                             height: 30,
                             image: AssetImage('assets/chat/9.png'),
                           ),
                         ),
                       ),
+                      // 上传中指示器
+                      if (_isUploading)
+                        const Positioned.fill(
+                          child: CircularProgressIndicator(
+                            valueColor: AlwaysStoppedAnimation<Color>(
+                              Colors.blue,
+                            ),
+                          ),
+                        ),
                     ],
                   ),
                 ),
@@ -164,15 +302,18 @@ class _ProfilePageCustomState extends State<ProfilePageCustom> {
                           onTap: _goToSetPassword,
                         ),
                         // 生成PC端登录码菜单项
-                        _buildMenuRow('生成pc端登陆码', onTap: _goToPcCode),
-                        // 邮箱认证菜单项
                         _buildMenuRow(
-                          '邮箱认证',
-                          trailing: '去认证',
-                          onTap: _goToEmailVerify,
+                          '用户信息',
+                          trailing: '详细',
+                          onTap: _goToPcCode,
                         ),
                         // 退出登录菜单项
                         _buildMenuRow('退出登录', isLast: true, onTap: _logout),
+                        _buildMenuRow(
+                          '清除token',
+                          isLast: true,
+                          onTap: _goToPcCodes,
+                        ),
                       ],
                     ),
                   ),
@@ -227,9 +368,3 @@ class _ProfilePageCustomState extends State<ProfilePageCustom> {
     );
   }
 }
-
-// 以下是示例页面，你可以替换为你的实际页面
-// class SetPasswordPage extends StatelessWidget { ... }
-// class PcCodePage extends StatelessWidget { ... }
-// class EmailVerifyPage extends StatelessWidget { ... }
-// class LoginPage extends StatelessWidget { ... }
