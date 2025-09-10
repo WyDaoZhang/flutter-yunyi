@@ -1486,6 +1486,16 @@ class _ChatPageState extends State<ChatPage>
 
       // 任务名称优先使用theme字段，如果没有则使用默认名称
       String taskName = theme.isNotEmpty ? theme : '文件处理';
+      if (taskName.isEmpty && filesData != null && filesData.isNotEmpty) {
+        final firstFile = filesData[0];
+        if (firstFile is Map<String, dynamic>) {
+          taskName = firstFile['filename'] ?? '';
+        }
+      }
+      // 如果还是为空，尝试使用content
+      if (taskName.isEmpty) {
+        taskName = info.isNotEmpty ? info : '文件处理';
+      }
 
       // 检查是否已存在相同messageId的任务
       int existingTaskIndex = -1;
@@ -1624,10 +1634,24 @@ class _ChatPageState extends State<ChatPage>
             statusText = '处理中'; // 默认或其他状态都显示为待处理
         }
 
+        // 获取任务名称，确保不为空
+        String taskName = item['content'] ?? '';
+        // 如果content为空，尝试从files中获取文件名
+        if (taskName.isEmpty && filesData != null && filesData.isNotEmpty) {
+          final firstFile = filesData[0];
+          if (firstFile is Map<String, dynamic>) {
+            taskName = firstFile['filename'] ?? '';
+          }
+        }
+        // 如果还是为空，使用默认名称
+        if (taskName.isEmpty) {
+          taskName = '未命名任务';
+        }
+
         // 创建Task对象
         newTasks.add(
           Task(
-            name: item['content'] ?? '未命名任务',
+            name: taskName,
             status: statusText,
             detail: item['content'] ?? '', // 可根据需要截取详情
             datetime: item['datetime'] ?? '',
@@ -2949,6 +2973,7 @@ class _ChatPageState extends State<ChatPage>
             ],
           },
         );
+        ToastUtil.showError('第一步$uploadUrlResponse');
         if (uploadUrlResponse['code'] != 200 ||
             !(uploadUrlResponse['data'] is List) ||
             uploadUrlResponse['data'].isEmpty) {
@@ -2981,38 +3006,39 @@ class _ChatPageState extends State<ChatPage>
             );
           },
         );
+        if (response.statusCode == 200) {
+          // 6. 上传成功，通知服务器并更新消息状态
+          await http.post(
+            'chat/api_server/api/upload_file_remind',
+            data: {
+              "files": [
+                {
+                  "file_type": mimeType ?? 'unknown',
+                  "filename": fileName,
+                  "size_readable": fileSizeInKB,
+                },
+              ],
+            },
+          );
 
-        // 6. 上传成功，通知服务器并更新消息状态
-        await http.post(
-          'chat/api_server/api/upload_file_remind',
-          data: {
-            "files": [
-              {
-                "file_type": mimeType ?? 'unknown',
-                "filename": fileName,
-                "size_readable": fileSizeInKB,
-              },
-            ],
-          },
-        );
+          // 获取文件在线访问路径
+          final fileUrlResponse = await http.post(
+            'chat/api_server/api/get_file_path',
+            data: {"filetype": mimeType ?? 'unknown', "filename": fileName},
+          );
 
-        // 获取文件在线访问路径
-        final fileUrlResponse = await http.post(
-          'chat/api_server/api/get_file_path',
-          data: {"filetype": mimeType ?? 'unknown', "filename": fileName},
-        );
+          // 更新消息为上传成功状态
+          _updateFileMessageStatus(
+            messageIndex!,
+            'success',
+            '文件上传成功',
+            fileUrl: fileUrlResponse ?? '',
+          );
 
-        // 更新消息为上传成功状态
-        _updateFileMessageStatus(
-          messageIndex!,
-          'success',
-          '文件上传成功',
-          fileUrl: fileUrlResponse ?? '',
-        );
-
-        // 将文件路径添加到已处理列表，防止再次处理
-        _sharedFilePaths.add(filePath);
-        _showToast('文件上传成功');
+          // 将文件路径添加到已处理列表，防止再次处理
+          _sharedFilePaths.add(filePath);
+          _showToast('文件上传成功');
+        }
       } catch (e) {
         _updateFileMessageStatus(
           messageIndex!,
@@ -3022,6 +3048,10 @@ class _ChatPageState extends State<ChatPage>
       } finally {
         // 无论成功失败，都移除正在处理的标记
         _processingFileIdentifiers.remove(fileIdentifier);
+
+        if (!_sharedFilePaths.contains(filePath)) {
+          _sharedFilePaths.add(filePath);
+        }
       }
     }
   }
