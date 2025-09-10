@@ -6,6 +6,7 @@ import 'package:audio_session/audio_session.dart';
 // import 'package:audioplayers/audioplayers.dart';
 import 'package:clipboard/clipboard.dart';
 import 'package:demo1/components/image_viewer.dart';
+import 'package:demo1/pages/login/login.dart';
 import 'package:demo1/utils/audio.dart';
 import 'package:demo1/utils/config.dart';
 import 'package:demo1/utils/evntbus.dart';
@@ -363,6 +364,8 @@ class _ChatPageState extends State<ChatPage>
   bool _hasPendingAIResponse = false;
   String? _pendingMessageId;
 
+  final Set<String> _processingFileIdentifiers = {};
+
   @override
   bool get wantKeepAlive => true; // 保持页面状态不被销毁
 
@@ -415,15 +418,35 @@ class _ChatPageState extends State<ChatPage>
     // 页面初始化完成后恢复滚动位置
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (messages.isNotEmpty) {
-        Future.delayed(const Duration(milliseconds: 500), () {
+        Future.delayed(const Duration(milliseconds: 300), () {
           _scrollToBottom();
         });
       }
     });
 
     //注册跳转到登录页的通知接受
-    eventBus.on<LogoutEvent>().listen((event) {
-      Navigator.pushNamed(context, '/login');
+    // eventBus.on<LogoutEvent>().listen((event) {
+    //   Navigator.pushNamed(context, '/login');
+    // });
+    //注册跳转到登录页的通知接受 - 增强版
+    _messageSubscription = eventBus.on<LogoutEvent>().listen((event) {
+      // 确保在UI线程中执行导航
+      if (mounted) {
+        print('收到退出登录事件，准备跳转到登录页');
+        // 清空分享相关状态变量
+        _sharedFilePaths.clear();
+        // _processingFileIdentifiers.clear();
+        // 使用Future.delayed确保在当前事件循环结束后执行导航
+        Future.delayed(Duration.zero, () {
+          if (mounted) {
+            // 清空所有路由栈并跳转到登录页
+            Navigator.of(context).pushAndRemoveUntil(
+              MaterialPageRoute(builder: (context) => const LoginPage()),
+              (Route<dynamic> route) => false,
+            );
+          }
+        });
+      }
     });
 
     // 标记当前是否有未完成的AI回复（在应用启动时）
@@ -487,6 +510,7 @@ class _ChatPageState extends State<ChatPage>
     _savedScrollOffset = _scrollController.offset;
     // 取消订阅，防止内存泄漏
     _intentSub.cancel();
+    _sharedFilePaths.clear();
     // 保存滚动位置
     _saveScrollPosition();
     // 新增: 移除监听器
@@ -513,7 +537,6 @@ class _ChatPageState extends State<ChatPage>
       case AppLifecycleState.resumed:
         // 应用返回前台
         // 确保WebSocket连接正常
-
         if (!_wsManager.isConnected && !_wsManager.isReconnecting) {
           print('应用返回前台，重新连接WebSocket...');
           _reconnectWebSocket();
@@ -534,12 +557,10 @@ class _ChatPageState extends State<ChatPage>
 
       case AppLifecycleState.inactive:
         // 应用处于非活动状态
-        _saveHistoryToLocal(); // 确保保存所有消息
         break;
 
       case AppLifecycleState.detached:
         // 应用即将退出
-        _saveHistoryToLocal(); // 确保保存所有消息
         break;
 
       default:
@@ -618,18 +639,34 @@ class _ChatPageState extends State<ChatPage>
 
   // 设置分享监听
   void _setupShareListener() {
+    bool _isProcessingShare = false;
+    // 增加一个标志来跟踪是否正在处理从后台唤醒的分享
+    bool _isProcessingInitialShare = false;
+
     // 1. 监听应用在前台时的实时分享
     _intentSub = ReceiveSharingIntent.instance.getMediaStream().listen(
       (List<SharedMediaFile> files) {
-        ToastUtil.showInfo("收到初始分享文件: ${files.length}个"); // 新增日志
+        // 防止与初始分享同时处理
+        if (_isProcessingShare || _isProcessingInitialShare) return;
+        _isProcessingShare = true;
+        ToastUtil.showInfo("收到实时分享文件: ${files.length}个");
         // 提取文件路径并更新UI
         final filePaths = files.map((file) => file.path ?? "未知路径").toList();
 
-        _handleSharedFiles(filePaths);
-        // ToastUtil.showInfo("分享文件: $filePaths"); // 新增日志
+        // 检查是否已经处理过这些文件路径（避免重复）
+        final newPaths = filePaths
+            .where((path) => !_sharedFilePaths.contains(path))
+            .toList();
+        if (newPaths.isNotEmpty) {
+          _handleSharedFiles(newPaths);
+          // 将新处理的路径添加到已处理列表
+          _sharedFilePaths.addAll(newPaths);
+        }
+        _isProcessingShare = false; // 处理完成后重置标志
       },
       onError: (err) {
         print("分享监听错误: $err");
+        _isProcessingShare = false; // 发生错误时也要重置标志
       },
     );
 
@@ -637,13 +674,30 @@ class _ChatPageState extends State<ChatPage>
     ReceiveSharingIntent.instance.getInitialMedia().then((
       List<SharedMediaFile> files,
     ) {
+      // 避免重复处理空列表或正在处理中的情况
+      if (files.isEmpty || _isProcessingShare || _isProcessingInitialShare) {
+        // 无论如何都要重置初始分享状态
+        ReceiveSharingIntent.instance.reset();
+        return;
+      }
+
+      _isProcessingInitialShare = true;
       final filePaths = files.map((file) => file.path ?? "未知路径").toList();
 
       if (filePaths.isNotEmpty) {
-        _handleSharedFiles(filePaths);
+        // 检查是否已经处理过这些文件路径（避免重复）
+        final newPaths = filePaths
+            .where((path) => !_sharedFilePaths.contains(path))
+            .toList();
+        if (newPaths.isNotEmpty) {
+          _handleSharedFiles(newPaths);
+          // 将处理的路径添加到已处理列表
+          _sharedFilePaths.addAll(newPaths);
+        }
       }
       // 重置初始分享状态
       ReceiveSharingIntent.instance.reset();
+      _isProcessingInitialShare = false; // 处理完成后重置标志
     });
   }
 
@@ -666,8 +720,18 @@ class _ChatPageState extends State<ChatPage>
     try {
       // 下拉时触发加载历史的方法
       await _lishixin();
+
+      // 标记用户已下拉加载历史消息
+      await StorageUtil.saveHasPulledDownHistory(true);
       // 等待列表渲染完成后再调整滚动位置
       WidgetsBinding.instance.addPostFrameCallback((_) {
+        final offset =
+            _scrollController.position.maxScrollExtent -
+            _scrollController.position.minScrollExtent;
+        if (offset > 0) {
+          _scrollController.jumpTo(offset);
+        }
+
         if (_scrollController.hasClients) {
           // 计算新增加的消息数量
           final addedItemsCount = messages.length - preLoadItemCount;
@@ -701,8 +765,26 @@ class _ChatPageState extends State<ChatPage>
   }
 
   // 添加从本地加载历史消息的方法
+  // 添加从本地加载历史消息的方法
   Future<void> _loadLocalHistoryMessages() async {
     try {
+      // 检查用户是否已下拉加载过历史消息
+      bool hasPulledDown = await StorageUtil.getHasPulledDownHistory();
+
+      if (hasPulledDown) {
+        // 如果用户已下拉过，删除本地消息
+        print('用户已下拉过历史消息，清空本地消息重新自动加载历史');
+        await StorageUtil.saveMessages([]); // 清空保存的完整消息
+
+        // 自动调用下拉加载历史信息的方法，不需要用户手动下拉
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          Future.delayed(const Duration(milliseconds: 100), () {
+            _loadMoreMessages();
+          });
+        });
+        return;
+      }
+
       // 优先尝试加载完整的消息列表
       final savedMessages = await StorageUtil.getMessages();
       final localEarliestMessageId = await StorageUtil.getEarliestMessageId();
@@ -792,31 +874,7 @@ class _ChatPageState extends State<ChatPage>
       // 这里需要实现将当前messages列表转换为可存储的格式
       // 由于我们已经在_lishixin方法中保存了从服务器获取的原始数据
       // 这里可以再次保存最新的earliestMessageId
-      final List<Map<String, dynamic>> messagesToSave = [];
-      for (var message in messages) {
-        messagesToSave.add({
-          'text': message.text,
-          'isMe': message.isMe,
-          'progress': message.progress,
-          'imageUrl': message.imageUrl,
-          'localImagePath': message.localImagePath,
-          'messageId': message.messageId,
-          'fileInfo': message.fileInfo,
-          'loading': message.loading,
-          'isGenerating': message.isGenerating,
-          'timestamp': message.timestamp,
-          'fullText': message.fullText,
-        });
-      }
-      await StorageUtil.saveMessages(messagesToSave);
       await StorageUtil.saveEarliestMessageId(_earliestMessageId);
-      // 如果有未完成的AI回复，保存相关信息
-      if (_hasPendingAIResponse && _pendingMessageId != null) {
-        await StorageUtil.savePendingResponseInfo({
-          'hasPending': _hasPendingAIResponse,
-          'pendingMessageId': _pendingMessageId,
-        });
-      }
       print('应用进入后台，已保存最新的earliestMessageId');
     } catch (e) {
       print('保存历史消息失败: $e');
@@ -897,9 +955,17 @@ class _ChatPageState extends State<ChatPage>
       if (aiMsgIndex != -1) {
         setState(() {
           messages[aiMsgIndex].isGenerating = false;
+
           // 清除未完成的AI回复标记
           _hasPendingAIResponse = false;
           _pendingMessageId = null;
+          // 同步更新左侧任务列表中对应任务的isRetrieving状态
+          final int taskIndex = _chatHistoryTasks.indexWhere(
+            (task) => task['message_id'] == messageId,
+          );
+          if (taskIndex != -1) {
+            _chatHistoryTasks[taskIndex]['isRetrieving'] = false;
+          }
         });
       }
     } catch (e) {
@@ -1345,6 +1411,46 @@ class _ChatPageState extends State<ChatPage>
       final List<dynamic>? filesData = message['value'];
       final String theme = message['theme'] ?? ''; // 提取主题信息
 
+      // 对于进度为0的初始消息，特殊处理确保100%出现且只出现一次
+
+      bool isDuplicateTask = false;
+      if (_taskList.isNotEmpty) {
+        // 检查是否有相同文件名和进度的任务
+        if (filesData != null && filesData.isNotEmpty) {
+          String fileName = '';
+          if (filesData[0] is Map<String, dynamic>) {
+            fileName = filesData[0]['filename'] ?? '';
+          }
+
+          if (fileName.isNotEmpty) {
+            isDuplicateTask = _taskList.any(
+              (task) =>
+                  task.detail?.contains(fileName) == true &&
+                  task.progress == progress,
+            );
+          }
+        }
+      }
+
+      // 如果是重复任务，直接返回，不进行处理
+      if (isDuplicateTask) {
+        print('检测到重复任务，忽略处理');
+        return;
+      }
+      // if (progress == 0.0) {
+      //   final newMessage = ChatMessage(
+      //     text: info,
+      //     isMe: false,
+      //     messageId: messageId,
+      //     // timestamp: getCurrentFormattedTimestamp(),?
+      //   );
+      //   setState(() {
+      //     messages.add(newMessage);
+      //     _tempAIMessageIndex = messages.length - 1;
+      //   });
+      //   _scrollToBottom();
+      // }
+
       // 解析文件列表
       final List<TaskFile> taskFiles = [];
       if (filesData != null) {
@@ -1369,10 +1475,10 @@ class _ChatPageState extends State<ChatPage>
           statusText = '已完成';
           break;
         case 'PENDING':
-          statusText = '待处理';
+          statusText = '已接受';
           break;
         case 'STARTED':
-          statusText = '待处理';
+          statusText = '处理中';
           break;
         default:
           statusText = '失败';
@@ -1392,6 +1498,26 @@ class _ChatPageState extends State<ChatPage>
       if (existingTaskIndex != -1) {
         // 更新现有任务
         setState(() {
+          if (progress == 0.5) {
+            // 检查是否已经为该messageId创建过初始消息
+            bool hasInitialMessage = messages.any(
+              (msg) => !msg.isMe && msg.messageId == messageId,
+            );
+
+            if (!hasInitialMessage) {
+              final newMessage = ChatMessage(
+                text: info,
+                isMe: false,
+                messageId: messageId,
+                // timestamp: getCurrentFormattedTimestamp(),
+              );
+              setState(() {
+                messages.add(newMessage);
+                _tempAIMessageIndex = messages.length - 1;
+              });
+              // _scrollToBottom();
+            }
+          }
           _taskList[existingTaskIndex] = Task(
             name: taskName,
             status: statusText,
@@ -1432,7 +1558,6 @@ class _ChatPageState extends State<ChatPage>
     } else {
       print('未处理的消息类型: ${message['action']}');
     }
-    _saveHistoryToLocal();
   }
 
   //原来文件返回信息
@@ -1496,7 +1621,7 @@ class _ChatPageState extends State<ChatPage>
             statusText = '失败';
             break;
           default:
-            statusText = '待处理'; // 默认或其他状态都显示为待处理
+            statusText = '处理中'; // 默认或其他状态都显示为待处理
         }
 
         // 创建Task对象
@@ -1722,7 +1847,7 @@ class _ChatPageState extends State<ChatPage>
   }
 
   // 发送消息
-  void _sendMessage(String text) async {
+  void _sendMessage(String text) {
     if (text.trim().isEmpty) return;
     FocusScope.of(context).unfocus();
 
@@ -1757,7 +1882,6 @@ class _ChatPageState extends State<ChatPage>
           )
           .toList(),
     );
-    await _saveHistoryToLocal();
     if (!success) {
       _showError('发送失败，请检查网络连接');
       // 发送失败时也需要关闭加载状态
@@ -2025,31 +2149,6 @@ class _ChatPageState extends State<ChatPage>
       },
     );
 
-    // debugPrint('上传结果$res');
-    final age = await http.post(
-      'chat/api_server/api/upload_file_remind',
-      data: {
-        "files": [
-          {
-            "file_type": mimeType,
-            "filename": fileName,
-            "size_readable": fileSizeInKBInt,
-          },
-        ],
-      },
-    );
-    final ages = await http.post(
-      'chat/api_server/api/get_file_path',
-      data: {"filetype": mimeType, "filename": fileName},
-    );
-    String onlineImageUrl = ages ?? '';
-    debugPrint('返回浏览结果$ages');
-    debugPrint('通知ws$age');
-    setState(() {
-      // messages.add(ChatMessage(isMe: true, imageUrl: ages));
-    });
-    _scrollToBottom();
-
     if (res['code'] == 200) {
       if (res['data'] is List && res['data'].isNotEmpty) {
         //提取临时的上传链接
@@ -2076,6 +2175,30 @@ class _ChatPageState extends State<ChatPage>
             // 检查上传结果
             if (response.statusCode == 200) {
               debugPrint('图片上传成功');
+              // debugPrint('上传结果$res');
+              final age = await http.post(
+                'chat/api_server/api/upload_file_remind',
+                data: {
+                  "files": [
+                    {
+                      "file_type": mimeType,
+                      "filename": fileName,
+                      "size_readable": fileSizeInKBInt,
+                    },
+                  ],
+                },
+              );
+              final ages = await http.post(
+                'chat/api_server/api/get_file_path',
+                data: {"filetype": mimeType, "filename": fileName},
+              );
+              String onlineImageUrl = ages ?? '';
+              debugPrint('返回浏览结果$ages');
+              debugPrint('通知ws$age');
+              setState(() {
+                // messages.add(ChatMessage(isMe: true, imageUrl: ages));
+              });
+              _scrollToBottom();
               _showToast('图片上传成功');
             } else {
               debugPrint('图片上传失败，状态码: ${response.statusCode}');
@@ -2088,6 +2211,23 @@ class _ChatPageState extends State<ChatPage>
         }
       }
     }
+  }
+
+  //获取当前时间
+  String getCurrentFormattedTimestamp() {
+    // 获取当前时间
+    DateTime now = DateTime.now();
+
+    // 格式化时间为指定格式：yyyy-MM-dd HH:mm:ss
+    String year = now.year.toString();
+    String month = now.month.toString().padLeft(2, '0');
+    String day = now.day.toString().padLeft(2, '0');
+    String hour = now.hour.toString().padLeft(2, '0');
+    String minute = now.minute.toString().padLeft(2, '0');
+    String second = now.second.toString().padLeft(2, '0');
+
+    // 拼接成指定格式
+    return '$year-$month-$day $hour:$minute:$second';
   }
 
   // 拍照功能处理
@@ -2347,26 +2487,74 @@ class _ChatPageState extends State<ChatPage>
   void _handleGalleryTap() async {
     try {
       setState(() => showFunctions = false);
-      final picker = ImagePicker();
-      // 使用pickMultiImage替代pickImage以支持多选
-      final List<XFile>? pickedFiles = await picker.pickMultiImage(
-        imageQuality: 80,
-        maxWidth: 800,
-      );
 
-      if (pickedFiles != null && pickedFiles.isNotEmpty) {
-        // 遍历选中的所有图片并发送
-        for (var file in pickedFiles) {
-          _sendImageMessage(file.path);
-        }
-        // 显示选中的图片数量
-        _showToast('已选择 ${pickedFiles.length} 张图片');
-      } else {
-        _showToast('未选择图片');
-      }
+      // 显示选择对话框：选择图片或选择视频
+      showModalBottomSheet(
+        context: context,
+        builder: (context) => Container(
+          padding: EdgeInsets.all(16),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              ListTile(
+                leading: Icon(Icons.photo),
+                title: Text('选择图片'),
+                onTap: () async {
+                  Navigator.pop(context);
+                  await _pickImagesFromGallery();
+                },
+              ),
+              ListTile(
+                leading: Icon(Icons.video_library),
+                title: Text('选择视频'),
+                onTap: () async {
+                  Navigator.pop(context);
+                  await _pickVideoFromGallery();
+                },
+              ),
+            ],
+          ),
+        ),
+      );
     } catch (e) {
-      _showError('选择图片失败: $e');
+      _showError('选择媒体文件失败: $e');
       print('相册选择异常: $e');
+    }
+  }
+
+  // 从相册选择图片
+  Future<void> _pickImagesFromGallery() async {
+    final picker = ImagePicker();
+    // 使用pickMultiImage替代pickImage以支持多选
+    final List<XFile>? pickedFiles = await picker.pickMultiImage(
+      imageQuality: 80,
+      maxWidth: 800,
+    );
+
+    if (pickedFiles != null && pickedFiles.isNotEmpty) {
+      // 遍历选中的所有图片并发送
+      for (var file in pickedFiles) {
+        _sendImageMessage(file.path);
+      }
+      // 显示选中的图片数量
+      _showToast('已选择 ${pickedFiles.length} 张图片');
+    } else {
+      _showToast('未选择图片');
+    }
+  }
+
+  // 从相册选择视频
+  Future<void> _pickVideoFromGallery() async {
+    final picker = ImagePicker();
+    final pickedFile = await picker.pickVideo(
+      source: ImageSource.gallery,
+      maxDuration: Duration(seconds: 60), // 限制最长视频时间
+    );
+
+    if (pickedFile != null) {
+      _sendVideoMessage(pickedFile.path);
+    } else {
+      _showToast('未选择视频');
     }
   }
 
@@ -2604,10 +2792,7 @@ class _ChatPageState extends State<ChatPage>
         'file/uploadUrl',
         data: {
           "files": [
-            {
-              "contentType": mimeType ?? 'application/octet-stream',
-              "fileName": fileName,
-            },
+            {"contentType": mimeType, "fileName": fileName},
           ],
         },
       );
@@ -2633,7 +2818,7 @@ class _ChatPageState extends State<ChatPage>
           uploadUrl,
           data: await file.readAsBytes(),
           options: Options(
-            contentType: mimeType ?? 'application/octet-stream',
+            contentType: mimeType,
             headers: {'Content-Length': fileSizeInBytes.toString()},
           ),
           // 上传进度监听
@@ -2654,7 +2839,7 @@ class _ChatPageState extends State<ChatPage>
             data: {
               "files": [
                 {
-                  "file_type": mimeType ?? 'unknown',
+                  "file_type": mimeType,
                   "filename": fileName,
                   "size_readable": fileSizeInKB,
                 },
@@ -2699,120 +2884,145 @@ class _ChatPageState extends State<ChatPage>
 
   //接受分享文件
   void _handleSharedFiles(List<String> filePaths) async {
-    final fileName = path.basename(filePaths[0]);
-    ToastUtil.showInfo("分享文件: $fileName"); // 新增日志
-    int? messageIndex;
-    setState(() {
-      messages.add(
-        ChatMessage(
-          isMe: true,
-          text: '正在上传文件: $fileName',
-          fileInfo: {
-            'name': fileName,
-            'path': filePaths[0],
-            'status': 'uploading',
+    // 创建一个基于时间戳的批次ID
+    String batchId = 'batch_${DateTime.now().millisecondsSinceEpoch}';
+
+    for (var filePath in filePaths) {
+      // 增加文件处理的唯一标识符，结合文件路径和批次ID
+      String fileIdentifier = '${filePath}_$batchId';
+
+      // 检查该文件是否正在被处理或已经处理过
+      if (_sharedFilePaths.contains(filePath) ||
+          _processingFileIdentifiers.contains(fileIdentifier)) {
+        print('跳过重复处理的文件: $filePath');
+        continue;
+      }
+
+      // 标记文件正在处理中
+      _processingFileIdentifiers.add(fileIdentifier);
+
+      final fileName = path.basename(filePath);
+      ToastUtil.showInfo("正在处理分享文件: $fileName");
+
+      int? messageIndex;
+      setState(() {
+        messages.add(
+          ChatMessage(
+            isMe: true,
+            text: '正在上传文件: $fileName',
+            fileInfo: {
+              'name': fileName,
+              'path': filePath,
+              'status': 'uploading',
+              'batchId': batchId, // 添加批次ID
+            },
+          ),
+        );
+        messageIndex = messages.length - 1;
+      });
+      _scrollToBottom();
+
+      try {
+        // 3. 获取文件信息并上传
+        final file = File(filePath);
+        if (!await file.exists()) {
+          _updateFileMessageStatus(messageIndex!, 'failed', '文件不存在');
+          continue;
+        }
+
+        // 获取文件大小
+        final fileSizeInBytes = await file.length();
+        final fileSizeInKB = (fileSizeInBytes / 1024).round();
+
+        // 获取文件MIME类型
+        final mimeType = await _getMimeType(filePath);
+
+        // 4. 先请求上传URL（与现有图片上传逻辑类似）
+        final uploadUrlResponse = await http.post(
+          'file/uploadUrl',
+          data: {
+            "files": [
+              {
+                "contentType": mimeType ?? 'application/octet-stream',
+                "fileName": fileName,
+              },
+            ],
           },
-        ),
-      );
-      messageIndex = messages.length - 1;
-    });
-    _scrollToBottom();
+        );
+        if (uploadUrlResponse['code'] != 200 ||
+            !(uploadUrlResponse['data'] is List) ||
+            uploadUrlResponse['data'].isEmpty) {
+          _updateFileMessageStatus(messageIndex!, 'failed', '获取上传地址失败');
+          continue;
+        }
 
-    // 3. 获取文件信息并上传
-    final file = File(filePaths[0]);
-    if (!await file.exists()) {
-      _updateFileMessageStatus(messageIndex!, 'failed', '文件不存在');
-      return;
-    }
+        // 提取上传URL
+        final uploadUrl = uploadUrlResponse['data'][0]['url'] ?? '';
+        if (uploadUrl.isEmpty) {
+          _updateFileMessageStatus(messageIndex!, 'failed', '上传地址无效');
+          continue;
+        }
 
-    // 获取文件大小
-    final fileSizeInBytes = await file.length();
-    final fileSizeInKB = (fileSizeInBytes / 1024).round();
-
-    // 获取文件MIME类型
-    final mimeType = await _getMimeType(filePaths[0]);
-
-    // 4. 先请求上传URL（与现有图片上传逻辑类似）
-    final uploadUrlResponse = await http.post(
-      'file/uploadUrl',
-      data: {
-        "files": [
-          {
-            "contentType": mimeType ?? 'application/octet-stream',
-            "fileName": fileName,
+        final dio = Dio();
+        final response = await dio.put(
+          uploadUrl,
+          data: await file.readAsBytes(),
+          options: Options(
+            contentType: mimeType ?? 'application/octet-stream',
+            headers: {'Content-Length': fileSizeInBytes.toString()},
+          ),
+          // 添加上传进度监听
+          onSendProgress: (sent, total) {
+            final progress = (sent / total * 100).round();
+            _updateFileMessageStatus(
+              messageIndex!,
+              'uploading',
+              '正在上传: $progress%',
+            );
           },
-        ],
-      },
-    );
-    if (uploadUrlResponse['code'] != 200 ||
-        !(uploadUrlResponse['data'] is List) ||
-        uploadUrlResponse['data'].isEmpty) {
-      _updateFileMessageStatus(messageIndex!, 'failed', '获取上传地址失败');
-      return;
-    }
+        );
 
-    // 提取上传URL
-    final uploadUrl = uploadUrlResponse['data'][0]['url'] ?? '';
-    if (uploadUrl.isEmpty) {
-      _updateFileMessageStatus(messageIndex!, 'failed', '上传地址无效');
-      return;
-    }
+        // 6. 上传成功，通知服务器并更新消息状态
+        await http.post(
+          'chat/api_server/api/upload_file_remind',
+          data: {
+            "files": [
+              {
+                "file_type": mimeType ?? 'unknown',
+                "filename": fileName,
+                "size_readable": fileSizeInKB,
+              },
+            ],
+          },
+        );
 
-    final dio = Dio();
-    final response = await dio.put(
-      uploadUrl,
-      data: await file.readAsBytes(),
-      options: Options(
-        contentType: mimeType ?? 'application/octet-stream',
-        headers: {'Content-Length': fileSizeInBytes.toString()},
-      ),
-      // 可以添加上传进度监听
-      onSendProgress: (sent, total) {
-        final progress = (sent / total * 100).round();
+        // 获取文件在线访问路径
+        final fileUrlResponse = await http.post(
+          'chat/api_server/api/get_file_path',
+          data: {"filetype": mimeType ?? 'unknown', "filename": fileName},
+        );
+
+        // 更新消息为上传成功状态
         _updateFileMessageStatus(
           messageIndex!,
-          'uploading',
-          '正在上传: $progress%',
+          'success',
+          '文件上传成功',
+          fileUrl: fileUrlResponse ?? '',
         );
-      },
-    );
 
-    if (response.statusCode == 200) {
-      // 6. 上传成功，通知服务器并更新消息状态
-      await http.post(
-        'chat/api_server/api/upload_file_remind',
-        data: {
-          "files": [
-            {
-              "file_type": mimeType ?? 'unknown',
-              "filename": fileName,
-              "size_readable": fileSizeInKB,
-            },
-          ],
-        },
-      );
-
-      // 获取文件在线访问路径
-      final fileUrlResponse = await http.post(
-        'chat/api_server/api/get_file_path',
-        data: {"filetype": mimeType ?? 'unknown', "filename": fileName},
-      );
-
-      // 更新消息为上传成功状态
-      _updateFileMessageStatus(
-        messageIndex!,
-        'success',
-        '文件上传成功',
-        fileUrl: fileUrlResponse ?? '',
-      );
-
-      _showToast('文件上传成功');
-    } else {
-      _updateFileMessageStatus(
-        messageIndex!,
-        'failed',
-        '上传失败，状态码: ${response.statusCode}',
-      );
+        // 将文件路径添加到已处理列表，防止再次处理
+        _sharedFilePaths.add(filePath);
+        _showToast('文件上传成功');
+      } catch (e) {
+        _updateFileMessageStatus(
+          messageIndex!,
+          'failed',
+          '上传失败: ${e.toString()}',
+        );
+      } finally {
+        // 无论成功失败，都移除正在处理的标记
+        _processingFileIdentifiers.remove(fileIdentifier);
+      }
     }
   }
 
@@ -2875,7 +3085,7 @@ class _ChatPageState extends State<ChatPage>
         return 'image/gif';
       case '.mp3':
         return 'audio/mpeg';
-      case 'aac':
+      case '.aac':
         return 'audio/aac';
       case '.mp4':
         return 'video/mp4';
@@ -3233,6 +3443,15 @@ class _ChatPageState extends State<ChatPage>
     };
 
     try {
+      if (!_wsManager.isConnected || _wsManager._channel == null) {
+        _showToast('连接已断开，请重新发送');
+        // 可以选择自动尝试重连
+        if (!_wsManager.isReconnecting) {
+          _showToast('正在尝试重新连接...');
+          _reconnectWebSocket();
+        }
+        return;
+      }
       // 通过 WebSocket 发送消息（假设你的 wsManager 已连接）
       _wsManager._channel?.sink.add(jsonEncode(msg));
       // 成功后可以更新 UI 状态
@@ -3241,6 +3460,12 @@ class _ChatPageState extends State<ChatPage>
     } catch (e) {
       // _updateFileMessageStatus(messageIndex!, 'failed', '语音发送失败: $e');
       _showToast('语音发送失败');
+
+      _showToast('连接已断开，请重新发送');
+      // 尝试重新连接
+      if (!_wsManager.isReconnecting) {
+        _reconnectWebSocket();
+      }
     }
   }
 
@@ -3335,7 +3560,8 @@ class _ChatPageState extends State<ChatPage>
                                     borderRadius: BorderRadius.circular(12),
                                   ),
                                   child: Text(
-                                    message.timestamp ?? '未知时间',
+                                    message.timestamp ??
+                                        getCurrentFormattedTimestamp(),
                                     style: const TextStyle(
                                       fontSize: 12,
                                       color: Colors.grey,
@@ -3717,7 +3943,9 @@ class _ChatPageState extends State<ChatPage>
       switch (status) {
         case "已完成":
           return Colors.green;
-        case "待处理":
+        case "处理中":
+          return Colors.blue;
+        case "已接受":
           return Colors.blue;
         case "失败":
           return Colors.red;
@@ -4974,6 +5202,7 @@ class ChatBubble extends StatelessWidget {
               }
             },
           ),
+          if (message.fullText.isEmpty) const SizedBox(height: 10),
         ],
       ),
     );

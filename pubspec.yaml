@@ -60,6 +60,7 @@ dependencies:
   file_picker: ^10.0.0
   gallery_saver_plus: ^3.2.9
   device_info_plus: ^11.5.0
+  photo_view: ^0.15.0
   # receive_sharing_intent: ^1.4.5  # 用于接收分享的文件
 
 flutter_launcher_icons:

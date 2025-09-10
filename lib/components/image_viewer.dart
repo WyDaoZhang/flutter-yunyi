@@ -7,6 +7,8 @@ import 'package:gallery_saver_plus/gallery_saver.dart';
 // import 'package:gallery_saver/gallery_saver.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:photo_view/photo_view.dart';
+import 'package:photo_view/photo_view_gallery.dart';
 // import '../utils/toast_util.dart';
 
 class ImageViewerPage extends StatefulWidget {
@@ -35,6 +37,10 @@ class _ImageViewerPageState extends State<ImageViewerPage> {
       appBar: AppBar(
         backgroundColor: Colors.black.withOpacity(0.5),
         elevation: 0,
+        leading: IconButton(
+          icon: Icon(Icons.arrow_back, color: Colors.white),
+          onPressed: () => Navigator.of(context).pop(),
+        ),
         actions: [
           IconButton(
             icon: Icon(Icons.download_outlined, color: Colors.white),
@@ -46,48 +52,33 @@ class _ImageViewerPageState extends State<ImageViewerPage> {
         children: [
           // 图片显示区域
           Center(
-            child: InteractiveViewer(
-              // 降低最小缩放比例，增加最大缩放比例
-              minScale: 0.1, // 允许缩小到原图的10%
-              maxScale: 10.0, // 允许放大到原图的10倍
-              // 启用边界对齐，确保图片在缩放后能够正确定位
-              alignment: Alignment.center,
-              panEnabled: true,
-              scaleEnabled: true,
-              child: widget.localImagePath != null
-                  ? Image.file(
-                      File(widget.localImagePath!),
-                      fit: BoxFit.contain,
-                      filterQuality: FilterQuality.high, // 设置高质量过滤
-                      errorBuilder: (context, error, stackTrace) {
-                        return _buildErrorWidget();
-                      },
-                    )
-                  : Image.network(
-                      widget.imageUrl,
-                      fit: BoxFit.contain,
-                      // 根据屏幕尺寸设置缓存大小，确保清晰度
-                      cacheWidth: screenWidth.toInt() * 2, // 缓存宽度设为屏幕宽度的2倍
-                      cacheHeight: screenHeight.toInt() * 2, // 缓存高度设为屏幕高度的2倍
-                      filterQuality: FilterQuality.high, // 设置高质量过滤
-                      loadingBuilder: (context, child, loadingProgress) {
-                        if (loadingProgress == null) return child;
-                        return Center(
-                          child: CircularProgressIndicator(
-                            value: loadingProgress.expectedTotalBytes != null
-                                ? loadingProgress.cumulativeBytesLoaded /
-                                      (loadingProgress.expectedTotalBytes ?? 1)
-                                : null,
-                            valueColor: AlwaysStoppedAnimation<Color>(
-                              Colors.white,
-                            ),
-                          ),
-                        );
-                      },
-                      errorBuilder: (context, error, stackTrace) {
-                        return _buildErrorWidget();
-                      },
-                    ),
+            child: PhotoView(
+              imageProvider: widget.localImagePath != null
+                  ? FileImage(File(widget.localImagePath!))
+                  : NetworkImage(widget.imageUrl),
+              minScale: PhotoViewComputedScale.contained * 0.1, // 允许缩小到原图的10%
+              maxScale: PhotoViewComputedScale.covered * 10.0, // 允许放大到原图的10倍
+              initialScale: PhotoViewComputedScale.contained,
+              loadingBuilder: (context, event) {
+                if (event == null) return Container();
+                return Center(
+                  child: CircularProgressIndicator(
+                    value: event.expectedTotalBytes != null
+                        ? event.cumulativeBytesLoaded /
+                              (event.expectedTotalBytes ?? 1)
+                        : null,
+                    valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+                  ),
+                );
+              },
+              errorBuilder: (context, error, stackTrace) {
+                return _buildErrorWidget();
+              },
+              backgroundDecoration: BoxDecoration(color: Colors.transparent),
+              enableRotation: false, // 可选：禁用旋转功能
+              heroAttributes: PhotoViewHeroAttributes(
+                tag: widget.imageUrl,
+              ), // 可选：添加hero动画
             ),
           ),
           // 下载进度指示器

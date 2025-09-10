@@ -9,6 +9,8 @@ class StorageUtil {
   // 添加新的存储键
   static const String _MESSAGES_KEY = 'chat_messages';
   static const String _PENDING_RESPONSE_KEY = 'pending_response_info';
+  // 新增：记录用户是否已下拉加载历史消息的存储键
+  static const String _HAS_PULLED_DOWN_KEY = 'has_pulled_down_history';
 
   // 保存历史消息到本地
   static Future<void> saveHistoryMessages(List<dynamic> messages) async {
@@ -72,6 +74,7 @@ class StorageUtil {
       await prefs.remove(_EARLIEST_MESSAGE_ID_KEY);
       await prefs.remove(_MESSAGES_KEY);
       await prefs.remove(_PENDING_RESPONSE_KEY);
+      await prefs.remove(_HAS_PULLED_DOWN_KEY); // 同时清除下拉标记
       print('本地历史消息已清除');
     } catch (e) {
       print('清除本地历史消息失败: $e');
@@ -129,5 +132,27 @@ class StorageUtil {
       print('获取未完成的AI回复信息失败: $e');
     }
     return null;
+  }
+
+  // 新增：保存用户已下拉加载历史消息的标记
+  static Future<void> saveHasPulledDownHistory(bool hasPulledDown) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool(_HAS_PULLED_DOWN_KEY, hasPulledDown);
+      print('下拉加载标记保存成功');
+    } catch (e) {
+      print('保存下拉加载标记失败: $e');
+    }
+  }
+
+  // 新增：获取用户是否已下拉加载历史消息的标记
+  static Future<bool> getHasPulledDownHistory() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      return prefs.getBool(_HAS_PULLED_DOWN_KEY) ?? false;
+    } catch (e) {
+      print('获取下拉加载标记失败: $e');
+    }
+    return false;
   }
 }
